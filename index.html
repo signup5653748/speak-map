@@ -151,6 +151,16 @@
 
   function darkenStyle(style){
     style.layers.forEach(function(layer){
+      try{
+        applyDarkPaint(layer);
+      }catch(e){
+        // Skip this one layer rather than corrupting the whole style
+      }
+    });
+    return style;
+  }
+
+  function applyDarkPaint(layer){
       var p = layer.paint || (layer.paint = {});
       var sl = layer['source-layer'];
 
@@ -158,7 +168,7 @@
       if(layer.id === 'natural_earth'){ p['raster-opacity'] = 0; return; }
 
       if(sl === 'water' && layer.type === 'fill'){ p['fill-color'] = WATER_COLOR; return; }
-      if(sl === 'waterway'){ p['line-color'] = WATERWAY_COLOR; return; }
+      if(sl === 'waterway' && layer.type === 'line'){ p['line-color'] = WATERWAY_COLOR; return; }
       if(sl === 'water_name' || (sl === 'waterway' && layer.type === 'symbol')){
         p['text-color'] = WATERWAY_COLOR; p['text-halo-color'] = LABEL_HALO; return;
       }
@@ -183,7 +193,7 @@
         if(p['fill-outline-color'] !== undefined) p['fill-outline-color'] = '#2a362f';
         return;
       }
-      if(sl === 'boundary'){ p['line-color'] = BOUNDARY_COLOR; return; }
+      if(sl === 'boundary' && layer.type === 'line'){ p['line-color'] = BOUNDARY_COLOR; return; }
 
       if(sl === 'transportation'){
         if(layer.type === 'line'){
@@ -204,8 +214,6 @@
       if(sl === 'place'){
         p['text-color'] = LABEL_TEXT; p['text-halo-color'] = LABEL_HALO; return;
       }
-    });
-    return style;
   }
 
   var statusEl = document.getElementById('statusText');
