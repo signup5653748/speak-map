@@ -125,9 +125,10 @@
   "use strict";
 
   var map = L.map('map', { zoomControl: true }).setView([20.5937, 78.9629], 5);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20,
+    subdomains: 'abcd',
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
   }).addTo(map);
 
   var meMarker = null;
@@ -193,7 +194,7 @@
     navigator.geolocation.getCurrentPosition(function(pos){
       var lat = pos.coords.latitude, lon = pos.coords.longitude;
       currentPos = {lat: lat, lon: lon};
-      map.setView([lat, lon], 16);
+      map.setView([lat, lon], map.getMaxZoom());
       if(meMarker) map.removeLayer(meMarker);
       meMarker = L.circleMarker([lat, lon], {
         radius: 9, color: '#4fd48a', fillColor: '#4fd48a', fillOpacity: 0.9
@@ -245,6 +246,26 @@
     });
   });
 
+  var OVERPASS_MIRRORS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.openstreetmap.ru/api/interpreter'
+  ];
+
+  function overpassFetch(query, mirrorIndex){
+    mirrorIndex = mirrorIndex || 0;
+    if(mirrorIndex >= OVERPASS_MIRRORS.length){
+      return Promise.reject(new Error('all mirrors failed'));
+    }
+    var url = OVERPASS_MIRRORS[mirrorIndex] + '?data=' + encodeURIComponent(query);
+    return fetch(url).then(function(r){
+      if(!r.ok) throw new Error('bad status ' + r.status);
+      return r.json();
+    }).catch(function(){
+      return overpassFetch(query, mirrorIndex + 1);
+    });
+  }
+
   function runNearbySearch(tag, label){
     if(!currentPos){
       announce('Getting your location first.');
@@ -253,18 +274,19 @@
     }
     setStatus('Finding ' + label + '…');
     var kv = tag.split('=');
-    var radius = 1500;
-    var query = '[out:json][timeout:20];node["' + kv[0] + '"="' + kv[1] + '"](around:' + radius + ',' + currentPos.lat + ',' + currentPos.lon + ');out center 20;';
-    fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query))
-      .then(function(r){ return r.json(); })
+    var radius = 2000;
+    var query = '[out:json][timeout:25];nwr["' + kv[0] + '"="' + kv[1] + '"](around:' + radius + ',' + currentPos.lat + ',' + currentPos.lon + ');out center 30;';
+    overpassFetch(query)
       .then(function(data){
         var items = (data.elements || []).map(function(el){
           var name = (el.tags && el.tags.name) ? el.tags.name : label + ' (unnamed)';
-          return { name: name, full: name, lat: el.lat, lon: el.lon };
-        });
+          var lat = (el.type === 'node') ? el.lat : (el.center ? el.center.lat : null);
+          var lon = (el.type === 'node') ? el.lon : (el.center ? el.center.lon : null);
+          return { name: name, full: name, lat: lat, lon: lon };
+        }).filter(function(it){ return it.lat != null && it.lon != null; });
         showResults(items, label);
       })
-      .catch(function(){ setStatus('Nearby search failed'); announce('Could not fetch nearby places. Please try again.'); });
+      .catch(function(){ setStatus('Nearby search failed'); announce('Could not fetch nearby places. Please check your internet connection and try again.'); });
   }
 
   function distMeters(lat1, lon1, lat2, lon2){
