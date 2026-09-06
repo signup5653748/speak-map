@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>MyMap — Accessible Navigator</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" />
 <style>
   :root{
     --bg:#0f1512;
@@ -80,8 +80,13 @@
     font-size:15px;cursor:pointer;padding:4px 0;
   }
   #resultsList li .dist{color:var(--text-dim);font-size:13px;display:block;margin-top:2px;}
+  #resultsList li:first-child .dist{color:var(--accent);font-weight:600;}
 
-  .leaflet-control-attribution{font-size:10px;}
+  .me-dot{width:18px;height:18px;border-radius:50%;background:#4fd48a;
+    border:3px solid #0f1512;box-shadow:0 0 0 3px #4fd48a55;}
+  .maplibregl-popup-content{background:#16201c;color:#eef4f0;border:1px solid #2a3a33;}
+  .maplibregl-popup-tip{border-top-color:#16201c !important;border-bottom-color:#16201c !important;}
+  .maplibregl-ctrl-attrib{font-size:10px;}
 </style>
 </head>
 <body>
@@ -119,24 +124,121 @@
   <div id="liveRegion" aria-live="polite"></div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
 <script>
 (function(){
   "use strict";
 
-  var map = L.map('map', { zoomControl: true }).setView([20.5937, 78.9629], 5);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20,
-    subdomains: 'abcd',
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
-  }).addTo(map);
+  // ---------- Dark theme + blue roads: rewrite the free OpenFreeMap "liberty" style ----------
+  var DARK_BG = '#0f1512';
+  var WATER_COLOR = '#12283a';
+  var WATERWAY_COLOR = '#2e5b86';
+  var GREEN_FILL = '#16261c';
+  var GREEN_FILL_2 = '#182420';
+  var BUILDING_FILL = '#1c2622';
+  var ROAD_MAIN = '#4aa3ff';
+  var ROAD_CASING = '#1c4d80';
+  var RAIL_COLOR = '#4a5a62';
+  var BOUNDARY_COLOR = '#3a4a42';
+  var LABEL_TEXT = '#eef4f0';
+  var LABEL_HALO = '#0f1512';
+  var ROAD_LABEL_TEXT = '#bfe0ff';
 
+  function darkenStyle(style){
+    style.layers.forEach(function(layer){
+      var p = layer.paint || (layer.paint = {});
+      var sl = layer['source-layer'];
+
+      if(layer.type === 'background'){ p['background-color'] = DARK_BG; return; }
+      if(layer.id === 'natural_earth'){ p['raster-opacity'] = 0; return; }
+
+      if(sl === 'water' && layer.type === 'fill'){ p['fill-color'] = WATER_COLOR; return; }
+      if(sl === 'waterway'){ p['line-color'] = WATERWAY_COLOR; return; }
+      if(sl === 'water_name' || (sl === 'waterway' && layer.type === 'symbol')){
+        p['text-color'] = WATERWAY_COLOR; p['text-halo-color'] = LABEL_HALO; return;
+      }
+
+      if(sl === 'park'){
+        if(layer.type === 'fill') p['fill-color'] = GREEN_FILL;
+        if(layer.type === 'line') p['line-color'] = '#274436';
+        return;
+      }
+      if(sl === 'landcover' || sl === 'landuse'){
+        if(layer.type === 'fill') p['fill-color'] = GREEN_FILL_2;
+        return;
+      }
+      if(sl === 'aeroway'){
+        if(layer.type === 'fill') p['fill-color'] = '#232b26';
+        if(layer.type === 'line') p['line-color'] = '#3a4a42';
+        return;
+      }
+      if(sl === 'building'){
+        if(p['fill-color'] !== undefined) p['fill-color'] = BUILDING_FILL;
+        if(p['fill-extrusion-color'] !== undefined) p['fill-extrusion-color'] = BUILDING_FILL;
+        if(p['fill-outline-color'] !== undefined) p['fill-outline-color'] = '#2a362f';
+        return;
+      }
+      if(sl === 'boundary'){ p['line-color'] = BOUNDARY_COLOR; return; }
+
+      if(sl === 'transportation'){
+        if(layer.type === 'line'){
+          var isRail = /rail/.test(layer.id);
+          var isCasing = /casing/.test(layer.id);
+          p['line-color'] = isRail ? RAIL_COLOR : (isCasing ? ROAD_CASING : ROAD_MAIN);
+        }
+        if(layer.type === 'fill'){ p['fill-opacity'] = 0.05; }
+        return;
+      }
+      if(sl === 'transportation_name'){
+        p['text-color'] = ROAD_LABEL_TEXT; p['text-halo-color'] = LABEL_HALO; p['text-halo-width'] = 1; return;
+      }
+
+      if(sl === 'poi' || sl === 'aerodrome_label'){
+        p['text-color'] = '#cdd8d2'; p['text-halo-color'] = LABEL_HALO; return;
+      }
+      if(sl === 'place'){
+        p['text-color'] = LABEL_TEXT; p['text-halo-color'] = LABEL_HALO; return;
+      }
+    });
+    return style;
+  }
+
+  var statusEl = document.getElementById('statusText');
+  function setStatus(t){ statusEl.textContent = t; }
+
+  var map = null;
   var meMarker = null;
   var resultMarkers = [];
   var lastSpokenText = "";
   var currentPos = null;
+  var MAX_ZOOM = 19;
 
-  function setStatus(t){ document.getElementById('statusText').textContent = t; }
+  fetch('https://tiles.openfreemap.org/styles/liberty')
+    .then(function(r){ return r.json(); })
+    .then(function(style){
+      initMap(darkenStyle(style));
+    })
+    .catch(function(){
+      initMap({
+        version: 8,
+        sources: { osm: { type: 'raster', tiles: ['https://tiles.openfreemap.org/planet'], tileSize: 256 } },
+        layers: [{ id: 'bg', type: 'background', paint: { 'background-color': DARK_BG } }]
+      });
+    });
+
+  function initMap(style){
+    map = new maplibregl.Map({
+      container: 'map',
+      style: style,
+      center: [78.9629, 20.5937],
+      zoom: 4,
+      attributionControl: true
+    });
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    map.on('load', function(){ locateMe(); });
+    wireUI();
+  }
+
   function announce(text, interrupt){
     lastSpokenText = text;
     document.getElementById('liveRegion').textContent = text;
@@ -147,15 +249,8 @@
     window.speechSynthesis.speak(u);
   }
 
-  document.getElementById('repeatBtn').addEventListener('click', function(){
-    if(lastSpokenText) announce(lastSpokenText);
-  });
-  document.getElementById('stopBtn').addEventListener('click', function(){
-    if('speechSynthesis' in window) window.speechSynthesis.cancel();
-  });
-
   function clearResultMarkers(){
-    resultMarkers.forEach(function(m){ map.removeLayer(m); });
+    resultMarkers.forEach(function(m){ m.remove(); });
     resultMarkers = [];
   }
 
@@ -169,7 +264,6 @@
         var full = data.display_name || (lat.toFixed(5) + ', ' + lon.toFixed(5));
 
         setStatus(city);
-        // Speak city name first, then the exact/full location, as two separate utterances
         announce('You are in ' + city + '.', true);
         window.setTimeout(function(){
           var u2 = new SpeechSynthesisUtterance('Exact location: ' + full);
@@ -194,62 +288,52 @@
     navigator.geolocation.getCurrentPosition(function(pos){
       var lat = pos.coords.latitude, lon = pos.coords.longitude;
       currentPos = {lat: lat, lon: lon};
-      map.setView([lat, lon], map.getMaxZoom());
-      if(meMarker) map.removeLayer(meMarker);
-      meMarker = L.circleMarker([lat, lon], {
-        radius: 9, color: '#4fd48a', fillColor: '#4fd48a', fillOpacity: 0.9
-      }).addTo(map).bindPopup('You are here');
+
+      map.flyTo({ center: [lon, lat], zoom: MAX_ZOOM, speed: 1.6 });
+
+      if(meMarker) meMarker.remove();
+      var el = document.createElement('div');
+      el.className = 'me-dot';
+      meMarker = new maplibregl.Marker({ element: el })
+        .setLngLat([lon, lat])
+        .setPopup(new maplibregl.Popup().setText('You are here'))
+        .addTo(map);
+
       reverseGeocodeAndSpeak(lat, lon);
       if(onFirstFix) onFirstFix();
-    }, function(err){
+    }, function(){
       setStatus('Location unavailable');
       announce('Could not get your location. Please check location permission.');
     }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 });
   }
 
-  document.getElementById('myLocBtn').addEventListener('click', function(){ locateMe(); });
-
   // ---- Text search (Nominatim) ----
   function runTextSearch(query){
     if(!query) return;
     setStatus('Searching…');
-    fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&q=' + encodeURIComponent(query) + '&limit=8')
+    fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&q=' + encodeURIComponent(query) + '&addressdetails=1&namedetails=1&limit=10')
       .then(function(r){ return r.json(); })
-      .then(function(list){ showResults(list.map(function(p){
-        return {
-          name: p.display_name.split(',')[0],
-          full: p.display_name,
-          lat: parseFloat(p.lat),
-          lon: parseFloat(p.lon)
-        };
-      })); })
+      .then(function(list){
+        var items = list.map(function(p){
+          var shortName = (p.namedetails && p.namedetails.name) ? p.namedetails.name
+            : (p.name && p.name.length ? p.name : p.display_name.split(',')[0].trim());
+          return {
+            name: shortName,
+            full: p.display_name,
+            lat: parseFloat(p.lat),
+            lon: parseFloat(p.lon)
+          };
+        });
+        showResults(items, 'results');
+      })
       .catch(function(){ setStatus('Search failed'); announce('Search failed. Please try again.'); });
   }
 
-  document.getElementById('searchBtn').addEventListener('click', function(){
-    runTextSearch(document.getElementById('searchInput').value.trim());
-  });
-  document.getElementById('searchInput').addEventListener('keydown', function(e){
-    if(e.key === 'Enter'){ runTextSearch(this.value.trim()); }
-  });
-
-  // ---- Nearby category search (Overpass) ----
-  var activeCat = null;
-  document.querySelectorAll('.catBtn').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      var tag = btn.getAttribute('data-tag');
-      document.querySelectorAll('.catBtn').forEach(function(b){ b.setAttribute('aria-pressed','false'); });
-      if(activeCat === tag){ activeCat = null; clearResultMarkers(); closeResultsList(); return; }
-      activeCat = tag;
-      btn.setAttribute('aria-pressed','true');
-      runNearbySearch(tag, btn.textContent.trim());
-    });
-  });
-
+  // ---- Nearby category search (Overpass, with mirror fallback) ----
   var OVERPASS_MIRRORS = [
-    'https://overpass-api.de/api/interpreter',
     'https://overpass.kumi.systems/api/interpreter',
-    'https://overpass.openstreetmap.ru/api/interpreter'
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter'
   ];
 
   function overpassFetch(query, mirrorIndex){
@@ -266,6 +350,7 @@
     });
   }
 
+  var activeCat = null;
   function runNearbySearch(tag, label){
     if(!currentPos){
       announce('Getting your location first.');
@@ -314,17 +399,24 @@
       return;
     }
 
+    var bounds = new maplibregl.LngLatBounds();
+    if(meMarker) bounds.extend(meMarker.getLngLat());
+
     items.forEach(function(it){
-      var marker = L.marker([it.lat, it.lon]).addTo(map).bindPopup(it.name);
+      var marker = new maplibregl.Marker({ color: '#4aa3ff' })
+        .setLngLat([it.lon, it.lat])
+        .setPopup(new maplibregl.Popup().setText(it.name))
+        .addTo(map);
       resultMarkers.push(marker);
+      bounds.extend([it.lon, it.lat]);
 
       var li = document.createElement('li');
       var b = document.createElement('button');
       var distText = it.dist != null ? Math.round(it.dist) + ' meters away' : '';
       b.innerHTML = it.name + (distText ? '<span class="dist">' + distText + '</span>' : '');
       b.addEventListener('click', function(){
-        map.setView([it.lat, it.lon], 17);
-        marker.openPopup();
+        map.flyTo({ center: [it.lon, it.lat], zoom: MAX_ZOOM });
+        marker.togglePopup();
         announce(it.name + (distText ? ', ' + distText : ''));
       });
       li.appendChild(b);
@@ -332,12 +424,11 @@
     });
 
     openResultsList();
-    var group = new L.featureGroup(resultMarkers.concat(meMarker ? [meMarker] : []));
-    map.fitBounds(group.getBounds().pad(0.2));
+    list.scrollTop = 0;
+    map.fitBounds(bounds, { padding: 70, maxZoom: 17 });
 
-    setStatus(items.length + ' results');
-    var announceLabel = label || 'results';
-    var msg = 'Found ' + items.length + ' ' + announceLabel + '. Closest: ' + items[0].name +
+    setStatus(items.length + ' results, nearest first');
+    var msg = 'Found ' + items.length + ' ' + label + '. Nearest: ' + items[0].name +
       (items[0].dist != null ? ', ' + Math.round(items[0].dist) + ' meters away.' : '.');
     announce(msg);
   }
@@ -345,10 +436,31 @@
   function openResultsList(){ document.getElementById('resultsList').classList.add('open'); }
   function closeResultsList(){ document.getElementById('resultsList').classList.remove('open'); }
 
-  // Auto-locate and announce on load
-  window.addEventListener('load', function(){
-    locateMe();
-  });
+  function wireUI(){
+    document.getElementById('myLocBtn').addEventListener('click', function(){ locateMe(); });
+    document.getElementById('repeatBtn').addEventListener('click', function(){
+      if(lastSpokenText) announce(lastSpokenText);
+    });
+    document.getElementById('stopBtn').addEventListener('click', function(){
+      if('speechSynthesis' in window) window.speechSynthesis.cancel();
+    });
+    document.getElementById('searchBtn').addEventListener('click', function(){
+      runTextSearch(document.getElementById('searchInput').value.trim());
+    });
+    document.getElementById('searchInput').addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){ runTextSearch(this.value.trim()); }
+    });
+    document.querySelectorAll('.catBtn').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var tag = btn.getAttribute('data-tag');
+        document.querySelectorAll('.catBtn').forEach(function(b){ b.setAttribute('aria-pressed','false'); });
+        if(activeCat === tag){ activeCat = null; clearResultMarkers(); closeResultsList(); return; }
+        activeCat = tag;
+        btn.setAttribute('aria-pressed','true');
+        runNearbySearch(tag, btn.textContent.trim());
+      });
+    });
+  }
 })();
 </script>
 </body>
