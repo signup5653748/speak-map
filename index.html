@@ -4,7 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>MyMap — Accessible Navigator</title>
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" />
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css"
+  onerror="this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.css'" />
 <style>
   :root{
     --bg:#0f1512;
@@ -122,9 +123,13 @@
   </div>
 
   <div id="liveRegion" aria-live="polite"></div>
+  <div id="errorBanner" role="alert" style="display:none;position:absolute;left:8px;right:8px;top:56px;
+    background:#3a1616;border:1px solid #e0665a;color:#ffd6d0;padding:10px 12px;border-radius:8px;
+    font-size:13px;z-index:5;"></div>
 </div>
 
-<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"
+  onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.js';s.onload=function(){window.__mlReady&&window.__mlReady();};document.body.appendChild(s);"></script>
 <script>
 (function(){
   "use strict";
@@ -206,6 +211,12 @@
   var statusEl = document.getElementById('statusText');
   function setStatus(t){ statusEl.textContent = t; }
 
+  var errorBanner = document.getElementById('errorBanner');
+  function showError(msg){
+    errorBanner.textContent = msg;
+    errorBanner.style.display = 'block';
+  }
+
   var map = null;
   var meMarker = null;
   var resultMarkers = [];
@@ -213,31 +224,75 @@
   var currentPos = null;
   var MAX_ZOOM = 19;
 
-  fetch('https://tiles.openfreemap.org/styles/liberty')
-    .then(function(r){ return r.json(); })
-    .then(function(style){
-      initMap(darkenStyle(style));
-    })
-    .catch(function(){
-      initMap({
-        version: 8,
-        sources: { osm: { type: 'raster', tiles: ['https://tiles.openfreemap.org/planet'], tileSize: 256 } },
-        layers: [{ id: 'bg', type: 'background', paint: { 'background-color': DARK_BG } }]
+  function fallbackStyle(){
+    return {
+      version: 8,
+      sources: {
+        osm: {
+          type: 'raster',
+          tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '&copy; OpenStreetMap contributors'
+        }
+      },
+      layers: [
+        { id: 'bg', type: 'background', paint: { 'background-color': DARK_BG } },
+        { id: 'osm-layer', type: 'raster', source: 'osm' }
+      ]
+    };
+  }
+
+  function startApp(){
+    if(typeof maplibregl === 'undefined'){
+      showError('Map library failed to load. Check your internet connection and reload the page.');
+      return;
+    }
+    fetch('https://tiles.openfreemap.org/styles/liberty')
+      .then(function(r){
+        if(!r.ok) throw new Error('style fetch ' + r.status);
+        return r.json();
+      })
+      .then(function(style){
+        initMap(darkenStyle(style));
+      })
+      .catch(function(err){
+        showError('Using basic map (style service unavailable): ' + err.message);
+        initMap(fallbackStyle());
       });
-    });
+  }
+  window.__mlReady = startApp;
 
   function initMap(style){
-    map = new maplibregl.Map({
-      container: 'map',
-      style: style,
-      center: [78.9629, 20.5937],
-      zoom: 4,
-      attributionControl: true
-    });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-    map.on('load', function(){ locateMe(); });
-    wireUI();
+    try{
+      map = new maplibregl.Map({
+        container: 'map',
+        style: style,
+        center: [78.9629, 20.5937],
+        zoom: 4,
+        attributionControl: true
+      });
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+      map.on('load', function(){ locateMe(); });
+      map.on('error', function(e){
+        var m = (e && e.error && e.error.message) ? e.error.message : 'unknown map error';
+        showError('Map error: ' + m);
+      });
+      wireUI();
+    }catch(err){
+      showError('Could not start the map: ' + err.message);
+    }
   }
+
+  if(typeof maplibregl !== 'undefined'){ startApp(); }
+  // else: waits for window.__mlReady(), called by the jsdelivr fallback <script onload>,
+  // or shows the "library failed to load" error if that also fails.
+  window.setTimeout(function(){
+    if(typeof maplibregl === 'undefined' && errorBanner.style.display === 'none'){
+      showError('Map library failed to load. Check your internet connection and reload the page.');
+    }
+  }, 8000);
 
   function announce(text, interrupt){
     lastSpokenText = text;
