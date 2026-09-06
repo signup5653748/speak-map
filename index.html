@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MyMap — Accessible Navigator</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root{
+    --bg:#0f1512;
+    --panel:#16201c;
+    --panel-border:#2a3a33;
+    --accent:#4fd48a;
+    --accent-dim:#2f6b4d;
+    --text:#eef4f0;
+    --text-dim:#9fb3a9;
+    --danger:#e0665a;
+    --focus:#ffd166;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;background:var(--bg);color:var(--text);
+    font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+  #app{display:flex;flex-direction:column;height:100vh;}
+
+  header{
+    padding:14px 16px;background:var(--panel);border-bottom:1px solid var(--panel-border);
+    display:flex;align-items:center;gap:10px;
+  }
+  header h1{font-size:18px;margin:0;font-weight:600;letter-spacing:.2px;}
+  header .status{margin-left:auto;font-size:13px;color:var(--text-dim);}
+
+  #map{flex:1;min-height:0;}
+
+  #searchBar{
+    display:flex;gap:8px;padding:10px 12px;background:var(--panel);
+    border-bottom:1px solid var(--panel-border);
+  }
+  #searchBar input{
+    flex:1;padding:12px 14px;border-radius:10px;border:1px solid var(--panel-border);
+    background:#0d1512;color:var(--text);font-size:16px;
+  }
+  #searchBar input:focus, button:focus{outline:3px solid var(--focus);outline-offset:2px;}
+  #searchBar button, .catBtn{
+    padding:12px 14px;border-radius:10px;border:1px solid var(--accent-dim);
+    background:var(--accent-dim);color:var(--text);font-size:15px;font-weight:600;
+    cursor:pointer;
+  }
+  #searchBar button:active, .catBtn:active{background:var(--accent);}
+
+  #categories{
+    display:flex;gap:8px;padding:0 12px 10px;background:var(--panel);
+    overflow-x:auto;border-bottom:1px solid var(--panel-border);
+  }
+  .catBtn{white-space:nowrap;background:#0d1512;border-color:var(--panel-border);}
+  .catBtn[aria-pressed="true"]{background:var(--accent-dim);border-color:var(--accent);}
+
+  #bottomBar{
+    display:flex;gap:8px;padding:10px 12px;background:var(--panel);
+    border-top:1px solid var(--panel-border);
+  }
+  #bottomBar button{
+    flex:1;padding:14px 10px;border-radius:10px;border:1px solid var(--panel-border);
+    background:#0d1512;color:var(--text);font-size:15px;font-weight:600;cursor:pointer;
+  }
+  #bottomBar button.primary{background:var(--accent-dim);border-color:var(--accent);}
+  #bottomBar button:active{filter:brightness(1.2);}
+
+  #liveRegion{position:absolute;left:-9999px;}
+
+  #resultsList{
+    list-style:none;margin:0;padding:0;max-height:0;overflow:hidden;
+    background:var(--panel);transition:max-height .2s ease;
+  }
+  #resultsList.open{max-height:40vh;overflow-y:auto;}
+  #resultsList li{
+    padding:12px 16px;border-bottom:1px solid var(--panel-border);
+  }
+  #resultsList li button{
+    width:100%;text-align:left;background:none;border:none;color:var(--text);
+    font-size:15px;cursor:pointer;padding:4px 0;
+  }
+  #resultsList li .dist{color:var(--text-dim);font-size:13px;display:block;margin-top:2px;}
+
+  .leaflet-control-attribution{font-size:10px;}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>MyMap</h1>
+    <span class="status" id="statusText">Locating…</span>
+  </header>
+
+  <div id="searchBar">
+    <input id="searchInput" type="text" placeholder="Search a place or address"
+      aria-label="Search a place or address" />
+    <button id="searchBtn" aria-label="Search">Search</button>
+  </div>
+
+  <div id="categories" role="group" aria-label="Nearby categories">
+    <button class="catBtn" data-tag="amenity=restaurant" aria-pressed="false">Food</button>
+    <button class="catBtn" data-tag="amenity=pharmacy" aria-pressed="false">Pharmacy</button>
+    <button class="catBtn" data-tag="amenity=atm" aria-pressed="false">ATM</button>
+    <button class="catBtn" data-tag="amenity=hospital" aria-pressed="false">Hospital</button>
+    <button class="catBtn" data-tag="highway=bus_stop" aria-pressed="false">Bus stop</button>
+    <button class="catBtn" data-tag="shop=supermarket" aria-pressed="false">Supermarket</button>
+  </div>
+
+  <ul id="resultsList" aria-live="off"></ul>
+
+  <div id="map" role="application" aria-label="Map view"></div>
+
+  <div id="bottomBar">
+    <button id="myLocBtn" class="primary" aria-label="Announce and center my current location">📍 My Location</button>
+    <button id="repeatBtn" aria-label="Repeat last announcement">🔊 Repeat</button>
+    <button id="stopBtn" aria-label="Stop speaking">⏹ Stop</button>
+  </div>
+
+  <div id="liveRegion" aria-live="polite"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  var map = L.map('map', { zoomControl: true }).setView([20.5937, 78.9629], 5);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  var meMarker = null;
+  var resultMarkers = [];
+  var lastSpokenText = "";
+  var currentPos = null;
+
+  function setStatus(t){ document.getElementById('statusText').textContent = t; }
+  function announce(text, interrupt){
+    lastSpokenText = text;
+    document.getElementById('liveRegion').textContent = text;
+    if(!('speechSynthesis' in window)) return;
+    if(interrupt !== false){ window.speechSynthesis.cancel(); }
+    var u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0;
+    window.speechSynthesis.speak(u);
+  }
+
+  document.getElementById('repeatBtn').addEventListener('click', function(){
+    if(lastSpokenText) announce(lastSpokenText);
+  });
+  document.getElementById('stopBtn').addEventListener('click', function(){
+    if('speechSynthesis' in window) window.speechSynthesis.cancel();
+  });
+
+  function clearResultMarkers(){
+    resultMarkers.forEach(function(m){ map.removeLayer(m); });
+    resultMarkers = [];
+  }
+
+  function reverseGeocodeAndSpeak(lat, lon){
+    setStatus('Getting address…');
+    fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=' + lat + '&lon=' + lon + '&zoom=18&addressdetails=1')
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        var addr = data.address || {};
+        var city = addr.city || addr.town || addr.village || addr.suburb || addr.county || 'Unknown area';
+        var full = data.display_name || (lat.toFixed(5) + ', ' + lon.toFixed(5));
+
+        setStatus(city);
+        // Speak city name first, then the exact/full location, as two separate utterances
+        announce('You are in ' + city + '.', true);
+        window.setTimeout(function(){
+          var u2 = new SpeechSynthesisUtterance('Exact location: ' + full);
+          u2.rate = 1.0;
+          window.speechSynthesis.speak(u2);
+          lastSpokenText = 'You are in ' + city + '. Exact location: ' + full;
+        }, 1800);
+      })
+      .catch(function(){
+        setStatus('Address lookup failed');
+        announce('Could not determine your address, but your position is on the map.');
+      });
+  }
+
+  function locateMe(onFirstFix){
+    if(!('geolocation' in navigator)){
+      setStatus('Geolocation not supported');
+      announce('This browser does not support location.');
+      return;
+    }
+    setStatus('Locating…');
+    navigator.geolocation.getCurrentPosition(function(pos){
+      var lat = pos.coords.latitude, lon = pos.coords.longitude;
+      currentPos = {lat: lat, lon: lon};
+      map.setView([lat, lon], 16);
+      if(meMarker) map.removeLayer(meMarker);
+      meMarker = L.circleMarker([lat, lon], {
+        radius: 9, color: '#4fd48a', fillColor: '#4fd48a', fillOpacity: 0.9
+      }).addTo(map).bindPopup('You are here');
+      reverseGeocodeAndSpeak(lat, lon);
+      if(onFirstFix) onFirstFix();
+    }, function(err){
+      setStatus('Location unavailable');
+      announce('Could not get your location. Please check location permission.');
+    }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 });
+  }
+
+  document.getElementById('myLocBtn').addEventListener('click', function(){ locateMe(); });
+
+  // ---- Text search (Nominatim) ----
+  function runTextSearch(query){
+    if(!query) return;
+    setStatus('Searching…');
+    fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&q=' + encodeURIComponent(query) + '&limit=8')
+      .then(function(r){ return r.json(); })
+      .then(function(list){ showResults(list.map(function(p){
+        return {
+          name: p.display_name.split(',')[0],
+          full: p.display_name,
+          lat: parseFloat(p.lat),
+          lon: parseFloat(p.lon)
+        };
+      })); })
+      .catch(function(){ setStatus('Search failed'); announce('Search failed. Please try again.'); });
+  }
+
+  document.getElementById('searchBtn').addEventListener('click', function(){
+    runTextSearch(document.getElementById('searchInput').value.trim());
+  });
+  document.getElementById('searchInput').addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){ runTextSearch(this.value.trim()); }
+  });
+
+  // ---- Nearby category search (Overpass) ----
+  var activeCat = null;
+  document.querySelectorAll('.catBtn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var tag = btn.getAttribute('data-tag');
+      document.querySelectorAll('.catBtn').forEach(function(b){ b.setAttribute('aria-pressed','false'); });
+      if(activeCat === tag){ activeCat = null; clearResultMarkers(); closeResultsList(); return; }
+      activeCat = tag;
+      btn.setAttribute('aria-pressed','true');
+      runNearbySearch(tag, btn.textContent.trim());
+    });
+  });
+
+  function runNearbySearch(tag, label){
+    if(!currentPos){
+      announce('Getting your location first.');
+      locateMe(function(){ runNearbySearch(tag, label); });
+      return;
+    }
+    setStatus('Finding ' + label + '…');
+    var kv = tag.split('=');
+    var radius = 1500;
+    var query = '[out:json][timeout:20];node["' + kv[0] + '"="' + kv[1] + '"](around:' + radius + ',' + currentPos.lat + ',' + currentPos.lon + ');out center 20;';
+    fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query))
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        var items = (data.elements || []).map(function(el){
+          var name = (el.tags && el.tags.name) ? el.tags.name : label + ' (unnamed)';
+          return { name: name, full: name, lat: el.lat, lon: el.lon };
+        });
+        showResults(items, label);
+      })
+      .catch(function(){ setStatus('Nearby search failed'); announce('Could not fetch nearby places. Please try again.'); });
+  }
+
+  function distMeters(lat1, lon1, lat2, lon2){
+    var R = 6371000;
+    var dLat = (lat2-lat1) * Math.PI/180;
+    var dLon = (lon2-lon1) * Math.PI/180;
+    var a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  function showResults(items, label){
+    clearResultMarkers();
+    var list = document.getElementById('resultsList');
+    list.innerHTML = '';
+
+    if(currentPos){
+      items.forEach(function(it){ it.dist = distMeters(currentPos.lat, currentPos.lon, it.lat, it.lon); });
+      items.sort(function(a,b){ return a.dist - b.dist; });
+    }
+
+    if(items.length === 0){
+      setStatus('No results found');
+      announce('No results found nearby.');
+      closeResultsList();
+      return;
+    }
+
+    items.forEach(function(it){
+      var marker = L.marker([it.lat, it.lon]).addTo(map).bindPopup(it.name);
+      resultMarkers.push(marker);
+
+      var li = document.createElement('li');
+      var b = document.createElement('button');
+      var distText = it.dist != null ? Math.round(it.dist) + ' meters away' : '';
+      b.innerHTML = it.name + (distText ? '<span class="dist">' + distText + '</span>' : '');
+      b.addEventListener('click', function(){
+        map.setView([it.lat, it.lon], 17);
+        marker.openPopup();
+        announce(it.name + (distText ? ', ' + distText : ''));
+      });
+      li.appendChild(b);
+      list.appendChild(li);
+    });
+
+    openResultsList();
+    var group = new L.featureGroup(resultMarkers.concat(meMarker ? [meMarker] : []));
+    map.fitBounds(group.getBounds().pad(0.2));
+
+    setStatus(items.length + ' results');
+    var announceLabel = label || 'results';
+    var msg = 'Found ' + items.length + ' ' + announceLabel + '. Closest: ' + items[0].name +
+      (items[0].dist != null ? ', ' + Math.round(items[0].dist) + ' meters away.' : '.');
+    announce(msg);
+  }
+
+  function openResultsList(){ document.getElementById('resultsList').classList.add('open'); }
+  function closeResultsList(){ document.getElementById('resultsList').classList.remove('open'); }
+
+  // Auto-locate and announce on load
+  window.addEventListener('load', function(){
+    locateMe();
+  });
+})();
+</script>
+</body>
+</html>
