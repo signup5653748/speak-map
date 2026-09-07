@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <title>MyMap — Accessible Navigator</title>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css"
   onerror="this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.css'" />
@@ -93,7 +96,9 @@
 <body>
 <div id="app">
   <header>
-    <h1>MyMap</h1>
+    <h1>MyMap <span id="buildTag" style="font-size:11px;font-weight:400;color:var(--text-dim);
+      background:#0d1512;border:1px solid var(--panel-border);border-radius:6px;padding:2px 6px;
+      vertical-align:middle;margin-left:4px;">Build 2</span></h1>
     <span class="status" id="statusText">Locating…</span>
   </header>
 
@@ -282,7 +287,11 @@
         attributionControl: true
       });
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-      map.on('load', function(){ locateMe(); });
+      map.on('load', function(){
+        ensureRouteLayer();
+        locateMe();
+      });
+      map.on('click', handleMapLabelClick);
       map.on('error', function(e){
         var m = (e && e.error && e.error.message) ? e.error.message : 'unknown map error';
         showError('Map error: ' + m);
@@ -361,6 +370,7 @@
         .setLngLat([lon, lat])
         .setPopup(new maplibregl.Popup().setText('You are here'))
         .addTo(map);
+      el.addEventListener('click', function(){ announce('You are here'); });
 
       reverseGeocodeAndSpeak(lat, lon);
       if(onFirstFix) onFirstFix();
@@ -470,6 +480,11 @@
         .setLngLat([it.lon, it.lat])
         .setPopup(new maplibregl.Popup().setText(it.name))
         .addTo(map);
+      marker.getElement().addEventListener('click', function(){
+        var distText2 = it.dist != null ? Math.round(it.dist) + ' meters away' : '';
+        announce(it.name + (distText2 ? ', ' + distText2 : ''));
+        drawRouteTo(it.lat, it.lon, it.name);
+      });
       resultMarkers.push(marker);
       bounds.extend([it.lon, it.lat]);
 
@@ -481,6 +496,7 @@
         map.flyTo({ center: [it.lon, it.lat], zoom: MAX_ZOOM });
         marker.togglePopup();
         announce(it.name + (distText ? ', ' + distText : ''));
+        drawRouteTo(it.lat, it.lon, it.name);
       });
       li.appendChild(b);
       list.appendChild(li);
@@ -498,6 +514,87 @@
 
   function openResultsList(){ document.getElementById('resultsList').classList.add('open'); }
   function closeResultsList(){ document.getElementById('resultsList').classList.remove('open'); }
+
+  var NAME_CLICK_LAYERS = [
+    'poi_r20','poi_r7','poi_r1','poi_transit','airport',
+    'label_city','label_city_capital','label_town','label_village',
+    'label_state','label_country_3','label_country_2','label_country_1','label_other',
+    'highway-name-major','highway-name-minor','highway-name-path'
+  ];
+  var POINT_NAME_LAYERS = [
+    'poi_r20','poi_r7','poi_r1','poi_transit','airport',
+    'label_city','label_city_capital','label_town','label_village'
+  ];
+
+  function handleMapLabelClick(e){
+    if(!map) return;
+    var present = NAME_CLICK_LAYERS.filter(function(id){ return map.getLayer(id); });
+    if(present.length === 0) return;
+    var feats = map.queryRenderedFeatures(e.point, { layers: present });
+    if(!feats.length) return;
+    var f = feats[0];
+    var props = f.properties || {};
+    var name = props.name || props.name_en || props['name:latin'];
+    if(!name) return;
+    setStatus(name);
+    announce(name);
+    if(POINT_NAME_LAYERS.indexOf(f.layer.id) !== -1 && f.geometry && f.geometry.type === 'Point'){
+      drawRouteTo(f.geometry.coordinates[1], f.geometry.coordinates[0], name);
+    }
+  }
+
+  // ---- Route highlighting (yellow), like Google Maps ----
+  function ensureRouteLayer(){
+    if(map.getSource('route')) return;
+    map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({
+      id: 'route-casing', type: 'line', source: 'route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#7a5a00', 'line-width': 9, 'line-opacity': 0.9 }
+    });
+    map.addLayer({
+      id: 'route-line', type: 'line', source: 'route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#ffcc00', 'line-width': 5 }
+    });
+  }
+
+  function drawRouteTo(destLat, destLon, label){
+    if(!currentPos){
+      announce('Getting your location first.');
+      locateMe(function(){ drawRouteTo(destLat, destLon, label); });
+      return;
+    }
+    setStatus('Finding route to ' + label + '…');
+    var url = 'https://router.project-osrm.org/route/v1/driving/' +
+      currentPos.lon + ',' + currentPos.lat + ';' + destLon + ',' + destLat +
+      '?overview=full&geometries=geojson';
+    fetch(url).then(function(r){ return r.json(); })
+      .then(function(data){
+        if(!data.routes || !data.routes.length){
+          announce('No route could be found to ' + label + '.');
+          return;
+        }
+        var route = data.routes[0];
+        var src = map.getSource('route');
+        if(src){
+          src.setData({ type: 'Feature', geometry: route.geometry, properties: {} });
+        }
+        var coords = route.geometry.coordinates;
+        var bounds = new maplibregl.LngLatBounds(coords[0], coords[0]);
+        coords.forEach(function(c){ bounds.extend(c); });
+        map.fitBounds(bounds, { padding: 60 });
+
+        var km = (route.distance / 1000).toFixed(1);
+        var mins = Math.round(route.duration / 60);
+        setStatus(km + ' km · ' + mins + ' min to ' + label);
+        announce('Route to ' + label + ': ' + km + ' kilometers, about ' + mins + ' minutes.');
+      })
+      .catch(function(){
+        setStatus('Route lookup failed');
+        announce('Could not calculate a route to ' + label + '.');
+      });
+  }
 
   function wireUI(){
     document.getElementById('myLocBtn').addEventListener('click', function(){ locateMe(); });
